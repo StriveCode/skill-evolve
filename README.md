@@ -14,22 +14,21 @@
 
 ---
 
-## 2. 三框架取长(明确出处)
+## 2. 环节
 
-| 借用的机制 | 来自 | 在本框架中的位置 |
-|---|---|---|
-| 人在环定 GT(对错定义不可自动化) | **maga** | Phase 0:基准由人确认,finalize 守卫 |
-| 会话采集 → 候选 → 人确认才落盘 | **maga** / SkillOpt-Sleep | Phase 0 的任务来源(可选) |
-| 有界三段小改(评判要点/怎么做/方法论) | **maga** | Phase 3:mutator 只动少数几处 |
-| 留出集 + 严格改善门控(strict `>`) | **SkillOpt** | Phase 4:`gate` 严格大于才接受 |
-| train/val/test 三分,小样本用 soft 分 | **SkillOpt** | 基准的 split 纪律 + 评分 |
-| optimizer/target 分离(强 optimizer) | **SkillOpt** | 配置:进化用强模型,目标冻结 |
-| eval 契约:pos/adv/over + 加权 rubric + RFC-2119 invariants + 确定性 directional probe + posture probe | **evolve-skill-spike** | 基准标准(见 `BENCHMARK_STANDARD.md`) |
-| 控制变量校准判官 + canary 防泄漏 | **evolve-skill-spike** | Phase 1:判官可信度前置闸 |
-| 进化前先验证进化台可信 | **evolve-skill-spike** | 把"可信度 spike"做成进化的准入条件 |
+| 环节 | 在本框架中的位置 |
+|---|---|
+| 人在环定 GT(对错定义不可自动化) | Phase 0:基准由人确认,finalize 守卫 |
+| 会话采集 → 候选 → 人确认才落盘 / SkillOpt-Sleep | Phase 0 的任务来源(可选) |
+| 有界三段小改(评判要点/怎么做/方法论) | Phase 3:mutator 只动少数几处 |
+| 留出集 + 严格改善门控(strict `>`) |  Phase 4:`gate` 严格大于才接受 |
+| train/val/test 三分,小样本用 soft 分 |  基准的 split 纪律 + 评分 |
+| optimizer/target 分离(强 optimizer) |  配置:进化用强模型,目标冻结 |
+| eval 契约:pos/adv/over + 加权 rubric + RFC-2119 invariants + 确定性 directional probe + posture probe | 基准标准(见 `BENCHMARK_STANDARD.md`) |
+| 控制变量校准判官 + canary 防泄漏| Phase 1:判官可信度前置闸 |
+| 进化前先验证进化台可信| 把"可信度 spike"做成进化的准入条件 |
 
-**本框架的定位(不夸大):** 三类核心机制都是从上表三家**直接搬来的,非本框架发明**。它的主体是**整合 + 标准化**(收敛优点 + 配基准标准 + 校验器),是施工规范/脚手架,**不是被验证过更强的新引擎**。唯一称得上"新"的是把"基准=跨代际复利资产"做成治理原则(模型升级强制重跑),但这是个**说法、至今未实跑验证**。"比三家更好"无证据,勿对外宣称——详见 `WHITEPAPER.md` §10.1。
-
+**本框架的定位(不夸大):** 。它的主体是**整合 + 标准化**(收敛优点 + 配基准标准 + 校验器),是施工规范/脚手架,**不是被验证过更强的新引擎**。唯一称得上"新"的是把"基准=跨代际复利资产"做成治理原则(模型升级强制重跑)。
 ---
 
 ## 3. 架构:一个进化周期
@@ -119,4 +118,3 @@ Phase 5  暂存提案 (stage, 人 adopt)      ← 不自动写线上 skill;人�
 - **S3(LLM judge)永远只和判官一样可信**;Phase 1 校准能暴露判官失灵,但不能消除其偏差。无 S1/S2 可用的纯主观 skill,本框架降级为"人辅助",收益有限。
 - **基准构造是人力成本**,且是前置硬成本——这正是它复利的代价。小团队应先给"高频 + 可客观判对错"的 skill 建基准。
 - **进化上限由 optimizer 决定**:基准再好,弱 optimizer 也够不到天花板。建议进化用强模型,冻结目标模型。
-- 与现有 maga 仓库可对接:Phase 0 的人在环复盘、Phase 4 的 `tools/gate.py` 可直接复用;本框架补的是"基准标准 + 判官校准"这两块 maga 偏弱的环节。
