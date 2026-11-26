@@ -13,15 +13,15 @@ description: Benchmark-first self-evolution for a target skill. Use when the use
 ```
 TARGET=<目标 skill 目录>;  TARGET_SKILL_MD=$TARGET/SKILL.md;  EVALS=$TARGET/evals
 OPTIMIZER=强模型(进化用);  TARGET_MODEL=冻结的目标模型(被评的执行器)
-RUN_DIR=<本次运行输出目录>(所有产物只写这里,绝不碰 $TARGET 之外)
+RUN_DIR=<本次运行输出目录>(快照、候选、打分、提案都只写这里)
 ```
-缺 `TARGET_SKILL_MD` → 拒绝。**进化用强 optimizer,目标模型冻结**(SkillOpt:optimizer 决定上限)。
+缺 `TARGET_SKILL_MD` → 拒绝。**进化用强 optimizer,目标模型冻结**(optimizer 决定改进的上限)。
 
 ## Phase 0 — 建基准(benchmark-first,人定 GT)⚠️ 硬前置
 
 1. 若 `$EVALS` 不存在或不全:按 `BENCHMARK_STANDARD.md` 与人协作起草 6 件套。
-   **不得自动起草并直接采用**——场景代表性、rubric 锚点、红线由人确认(maga 的人在环 GT)。
-2. 校验:`python scripts/validate_bench.py $EVALS`。`valid:false` → 打印 `errors[]`,**停**,先补基准。
+   **不得自动起草并直接采用**——场景代表性、rubric 锚点、红线由人确认。
+2. 校验:`python3 <本 skill 目录>/scripts/validate_bench.py $EVALS`。`valid:false` → 打印 `errors[]`,**停**,先补基准。
 3. 把通过校验的 `evals/` 视为**主交付物**,版本化入库。
 
 > 没有合格基准就没有进化资格。这是本框架与"松散自我改写"的分界。
@@ -45,7 +45,7 @@ baseline skill 在 `scenarios.md`(train+val 切片)上,用 **runner→judge 分�
 ## Phase 3 — 有界变异(bounded mutate)
 
 1. 读失败场景,按 `Σ(权重 × 失败幅度)` 选 top-K 失败轴(如 覆盖/纪律/加例/收紧措辞)。
-2. 每轴派一个 mutator,**只改少数几处**(maga:评判要点 / 怎么做好 / 方法论 三段内的有界小改),产出候选变体。
+2. 每轴派一个 mutator,**只改少数几处**(限于评判要点 / 怎么做好 / 方法论这几段内的小改),产出候选变体。
 3. 改前快照当前 skill,可回退。
 
 ## Phase 4 — 双门控(invariants + held-out,strict improve)
@@ -61,7 +61,7 @@ winner = 通过三闸且 val 分最高的候选;无候选过闸 → `baseline_re
 ## Phase 5 — 暂存提案(人 adopt)
 
 **绝不自动写 `$TARGET_SKILL_MD`。** 产出 `$RUN_DIR/proposal/`:winner skill、diff、各门控分、回归列表、判官校准结果。
-向人汇报后,由人确认采纳(maga/Claude Dreams 的 review-then-adopt)。
+向人汇报后,由人确认采纳。
 
 ## Phase 6 — 治理记录(可选但建议)
 
@@ -69,7 +69,7 @@ winner = 通过三闸且 val 分最高的候选;无候选过闸 → `baseline_re
 
 ## Restrictions
 
-- 绝不修改 `$TARGET` 之外;所有写入只在 `$RUN_DIR`。
+- 写入范围只有两处:经人确认的基准写入 `$EVALS`,其余产物写入 `$RUN_DIR`。绝不改写 `$TARGET_SKILL_MD`,也不碰这两处之外的文件。
 - 绝不自动起草并直接采用基准;`validate_bench.py` 不过则停。
 - 绝不自动采纳 winner;Phase 5 必须人确认。
 - 判官(S3)必须先过 Phase 1 校准;判官不得看到候选 skill 文本。

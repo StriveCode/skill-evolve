@@ -119,7 +119,7 @@ rubric 是"打分",invariants 是"准入",两者分开。
 **Drift signal:** <skill 的指令有没有被错误带到不适用的后续轮>
 ```
 
-**约束:** probe ≥ 1(强烈建议含 1 条 multi-turn)。
+**约束:** probe ≥ 1(强烈建议含 1 条 multi-turn)。校验器目前只检查本文件是否存在,不统计条数,这条由人把关。
 判官给出 `drift_severity` 0–3;Phase 4 对比 winner 与 baseline 的漂移增量。
 
 ---
@@ -142,11 +142,11 @@ rubric 是"打分",invariants 是"准入",两者分开。
 ## 7. 校验
 
 ```bash
-python scripts/validate_bench.py <skill>/evals
+python3 scripts/validate_bench.py <skill>/evals
 # valid:true(exit 0)才允许进入 Phase 1;否则按 errors[] 补齐,不许自动起草基准
 ```
 
-校验器只查**结构与数量**硬约束(文件齐全、场景三类齐、权重和为 1、红线/探针/控制数量达标)。
+校验器只查**结构与数量**硬约束(文件齐全、场景三类齐、权重和为 1、红线 / directional probe / 控制数量达标)。
 **内容质量(场景是否真有代表性、rubric 档位是否锚得准)由人在 Phase 0 负责**——这部分不可自动化,正是基准的人力成本所在。
 
 ---

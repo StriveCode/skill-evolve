@@ -1,120 +1,163 @@
-# skill-evolve —— benchmark-first 的 skill 自进化框架
+# skill-evolve
 
-> 一句话定位:**先把"什么叫做对"沉淀成可校验的基准,再让模型在留出集 + 门控下小步进化 skill。基准是版本化的主资产,skill 文本是可丢弃的产物。**
+让编码 Agent（Claude Code、Codex 等）**先把“什么叫做对”写成可校验的基准，再对着基准小步改进一个 skill** 的方法。
 
-本框架综合了三个已有方案的优点,并落实了一条核心认知:**skill 和 optimizer 都是会被模型升级吞掉的"耗材",只有 benchmark 跨模型代际复利——所以最该投资、最该先建的是基准本身。**
+改 skill 最常见的问题是没有度量：改完“感觉好一点”，既不能复现，也发现不了把别的情形改坏了。skill-evolve 的做法是把顺序倒过来，先建基准、先验证打分可信，然后才允许改；改动只有在留出的场景上严格变好、没有回退、没有碰红线时才会被提出来，最后由人决定是否采纳。
 
----
-
-## 1. 三条核心理念(决定了所有设计)
-
-1. **基准优先 (benchmark-first)。** 不允许"没有基准就进化"。Phase 0 必须先产出并校验 `evals/` 契约;skill 的**主交付物是这套基准**,不是改后的 SKILL.md。
-2. **门控是闸,不是源。** 门控只过滤、不创造提升。决策链 `门控 → eval → benchmark → 对错的定义` 决定了:门控的可信度 = 它下游基准的有效性。所以**进化前先校准判官**(用控制变量),判官不可信就不许进化。
-3. **信号强度分级。** 能用确定性断言就不用 LLM judge;能用锚定档位的 rubric 就不用裸感觉。人只出现在最底层"定义对错"处,不进每候选的回路。
-
----
-
-## 2. 环节
-
-| 环节 | 在本框架中的位置 |
-|---|---|
-| 人在环定 GT(对错定义不可自动化) | Phase 0:基准由人确认,finalize 守卫 |
-| 会话采集 → 候选 → 人确认才落盘 / SkillOpt-Sleep | Phase 0 的任务来源(可选) |
-| 有界三段小改(评判要点/怎么做/方法论) | Phase 3:mutator 只动少数几处 |
-| 留出集 + 严格改善门控(strict `>`) |  Phase 4:`gate` 严格大于才接受 |
-| train/val/test 三分,小样本用 soft 分 |  基准的 split 纪律 + 评分 |
-| optimizer/target 分离(强 optimizer) |  配置:进化用强模型,目标冻结 |
-| eval 契约:pos/adv/over + 加权 rubric + RFC-2119 invariants + 确定性 directional probe + posture probe | 基准标准(见 `BENCHMARK_STANDARD.md`) |
-| 控制变量校准判官 + canary 防泄漏| Phase 1:判官可信度前置闸 |
-| 进化前先验证进化台可信| 把"可信度 spike"做成进化的准入条件 |
-
-**本框架的定位(不夸大):** 。它的主体是**整合 + 标准化**(收敛优点 + 配基准标准 + 校验器),是施工规范/脚手架,**不是被验证过更强的新引擎**。唯一称得上"新"的是把"基准=跨代际复利资产"做成治理原则(模型升级强制重跑)。
----
-
-## 3. 架构:一个进化周期
-
-```
-Phase 0  建基准 (benchmark-first)        ← 人定 GT,产出并校验 evals/
-   │        validate_bench.py 不过 → 停,先补基准
-   ▼
-Phase 1  校准判官 (gate-before-gate)     ← 跑 controls:identity/regress/drift
-   │        判官不可信(连明显垃圾都排不对) → 停,先修 rubric/judge
-   ▼
-Phase 2  评基线                          ← baseline skill 在 scenarios 上得分
-   ▼
-Phase 3  有界变异 (bounded mutate)       ← 按失败轴生成 K 个候选,各只改少数几处
-   ▼
-Phase 4  双门控 (invariants + held-out)  ← 先过红线,再 strict-improve on val,零回归
-   ▼
-Phase 5  暂存提案 (stage, 人 adopt)      ← 不自动写线上 skill;人确认才落
-   ▼
-   (治理) 模型升级时 → 重跑基准 → 判断"被吞/退步",决定 skill 去留
+```mermaid
+flowchart LR
+    P0[Phase 0<br/>建基准<br/>人确认对错] --> P1{Phase 1<br/>校准判官<br/>打分可信吗?}
+    P1 -- 不可信 --> P0
+    P1 -- 可信 --> P2[Phase 2<br/>评基线]
+    P2 --> P3[Phase 3<br/>有界变异<br/>每个候选只改几处]
+    P3 --> P4{Phase 4<br/>门控<br/>红线 · 严格变好 · 零回退}
+    P4 -- 未通过 --> P3
+    P4 -- 通过 --> P5[Phase 5<br/>暂存提案<br/>人决定是否采纳]
 ```
 
-**与"耗材/资产"对应:** Phase 0–1 产出的基准是资产(入库长存);Phase 3–5 产出的 skill 是耗材(随模型升级可丢)。
+## 这个仓库里有什么
 
----
-
-## 4. Eval 策略(显式)
-
-### 4.1 信号强度优先级(自上而下选最强可用的)
-
-| 级别 | 形式 | 例子 | 何时用 |
-|---|---|---|---|
-| **S1 确定性** | 字符串/正则/可执行断言 | directional probe `^1\.\s`;import 改写精确比对 | 只要"对"能被机器判,**首选** |
-| **S2 锚定 rubric** | 每档(0/1/2)绑可观测信号 + 权重 | correctness/brevity/asked-once | 对错主观但可拆维度 |
-| **S3 LLM judge** | 独立判官 + 锚定 rubric | 锐评"梗点"是否命中 | 只有 S1/S2 都不行时,且**必须经 Phase 1 校准** |
-
-**铁律:** 能 S1 不用 S2,能 S2 不用 S3。S3 的可信度 ≤ 判官可信度,所以 S3 必须配 control 校准 + canary 防泄漏(判官不得看到候选 skill 文本,只看行为)。
-
-### 4.2 自动化边界:人放在哪
-
-- **人只在最底层"定义对错"**:写 scenarios 的 Expected/Must-NOT、定 rubric 权重、定 invariants 红线、确认 GT。这层不可自动化(maga 的教训)。
-- **回路里全自动**:打分、变异、门控、回归检测。人不逐候选打分。
-- **采纳是人的**:Phase 5 暂存,人 adopt(Claude Dreams / maga 的 review-then-adopt)。
-
-### 4.3 留出纪律(防循环论证)
-
-- `scenarios` 内部不复用:**提变异看到的失败**来自 train 切片,**门控验收**用 val 切片,**最终汇报数字**用 test 切片(从不参与选择,只读一次)。
-- 小样本(每切片 < ~10)用 **soft 分**(部分得分)而非 hard 准确率,否则门控感知不到细微进步(SkillOpt 的经验)。
-
-### 4.4 门控规则(strict improve + 零回归 + 红线)
-
-候选被接受,当且仅当**三条全满足**:
-1. **invariants 全过**(任一 MUST NOT 被违反 → 直接出局,不论分多高);
-2. **val 分严格大于当前**(`>`,非 `>=`,平分也拒,防漂移);
-3. **零回归**(val 里原本通过的样本不许变红)。
-否则丢弃,skill 回滚,把"被拒的编辑 + 掉分原因"记入 buffer 供下轮避坑(maga/SkillOpt 共有)。
-
----
-
-## 5. Skill Benchmark 基准(摘要,完整见 `BENCHMARK_STANDARD.md`)
-
-每个要进化的 skill 必须自带 `evals/` 目录,含 6 件:
-
-| 文件 | 定义"好坏"的哪一面 | 最低要求 |
+| 内容 | 文件 | 说明 |
 |---|---|---|
-| `scenarios.md` | 行为对错(Expected/Must-NOT) | ≥6 条,且 pos≥4 / adv≥1 / over≥1 |
-| `rubric.md` | "好"的加权维度,每档锚定信号 | ≥3 维,权重和 = 1.0 |
-| `invariants.md` | 红线(一票否决) | ≥3 条 RFC-2119 MUST/MUST NOT |
-| `directional_probes.md` | 忠实度(确定性正则) | ≥2 条 |
-| `posture_probes.md` | 行为/范围漂移 | ≥1 条(建议含 multi-turn) |
-| `controls/` | **校准判官本身** | ctrl-A identity / ctrl-C regress / ctrl-B drift |
+| 操作方法 | [SKILL.md](SKILL.md) | 给编码 Agent 读的分阶段流程 |
+| 基准规范 | [BENCHMARK_STANDARD.md](BENCHMARK_STANDARD.md) | 一个 skill 的 `evals/` 目录该有哪些文件、每个文件怎么写 |
+| 结构校验器 | `scripts/validate_bench.py` | 检查 `evals/` 是否齐全、数量是否达标；Python 3，无第三方依赖 |
+| 模板 | `templates/evals/` | 可以直接复制的基准骨架 |
+| 设计背景 | [WHITEPAPER.md](WHITEPAPER.md) | 为什么这样设计、参考了哪些已有做法、已知的不足 |
 
-校验:`python scripts/validate_bench.py <skill>/evals` —— 不过则 Phase 0 停。
+它目前**没有**自带的运行、打分和门控脚本。评基线、生成候选、过门控这些步骤由编码 Agent 按 `SKILL.md` 执行，仓库里能独立运行的程序只有结构校验器。所以它更接近一份施工规范加脚手架，而不是一个开箱即跑的进化引擎。
 
----
+如果你要调的是单份提示词，并且希望跑用例、打分、配对比较和记账都由脚本完成，可以看 [prompt-evolve](https://github.com/StriveCode/prompt-evolve)。
 
-## 6. 治理:为什么这套基准比 skill 更值钱
+## 一分钟试跑
 
-- **模型升级时强制重跑基准。** 用它分辨"新模型吞掉了 skill 的能力(可删 skill)"vs"悄悄退步了(需保留/加强 skill)"。没有基准,这两者无法区分,只能盲赌。
-- **基准是下一代 skill 的优化信号。** 即使本代 skill 被吞,基准还在,直接拿去优化下一个尚未被吞的 skill。
-- **结论:skill 投资折旧,benchmark 投资复利。** 入库的应是 `evals/`,SKILL.md 只是它当下的一个解。
+```bash
+git clone https://github.com/StriveCode/skill-evolve.git && cd skill-evolve
+python3 scripts/validate_bench.py templates/evals
+```
 
----
+校验器输出一份 JSON 报告：
 
-## 7. 诚实局限
+```json
+{
+  "valid": true,
+  "scenarios_total": 6,
+  "partition": {"positive": 4, "adversarial": 1, "over_application": 1},
+  "criteria_count": 3,
+  "criteria_weight_sum": 1.0,
+  "invariants_count": 3,
+  "directional_probes_count": 2,
+  "controls_present": ["ctrl-A-identity.md", "ctrl-B-posture-bad.md", "ctrl-C-obvious-regress.md"],
+  "errors": []
+}
+```
 
-- **S3(LLM judge)永远只和判官一样可信**;Phase 1 校准能暴露判官失灵,但不能消除其偏差。无 S1/S2 可用的纯主观 skill,本框架降级为"人辅助",收益有限。
-- **基准构造是人力成本**,且是前置硬成本——这正是它复利的代价。小团队应先给"高频 + 可客观判对错"的 skill 建基准。
-- **进化上限由 optimizer 决定**:基准再好,弱 optimizer 也够不到天花板。建议进化用强模型,冻结目标模型。
+模板里全是占位符，却也能得到 `valid: true`。这正说明校验器只查结构和数量，内容是否有代表性要由人来判断。
+
+## 安装与使用
+
+把整个目录放进编码 Agent 的 skills 目录：
+
+```bash
+git clone https://github.com/StriveCode/skill-evolve.git ~/.claude/skills/skill-evolve          # Claude Code，个人
+git clone https://github.com/StriveCode/skill-evolve.git <项目>/.claude/skills/skill-evolve     # 或者放进某个项目
+```
+
+然后给要改进的 skill 准备基准：
+
+```bash
+cp -r ~/.claude/skills/skill-evolve/templates/evals <你的 skill>/evals
+# 按 BENCHMARK_STANDARD.md 把占位符换成真实内容
+python3 ~/.claude/skills/skill-evolve/scripts/validate_bench.py <你的 skill>/evals
+```
+
+校验通过后，对 Agent 说“用 skill-evolve 进化 `<你的 skill 目录>`”。它会按阶段执行，最后把提案（胜出的版本、diff、各项门控分数、回退列表、判官校准结果）放进本次运行的输出目录，等你确认。目标 skill 的 `SKILL.md` 不会被自动改写。
+
+校验器的退出码：`0` 通过，`1` 不通过（原因在 `errors` 里），`2` 参数或目录错误。
+
+## 三条设计原则
+
+1. **基准优先。** 没有合格的基准就不进化。一次进化的主要产出是这套基准，改后的 `SKILL.md` 只是它在当前模型上的一个解。
+2. **门控只筛选，不创造提升。** 门控的结论有多可信，取决于它依据的打分有多可信。所以在评任何候选之前，先用几个答案已知的对照样本检验打分本身，检验不过就不许进化。
+3. **优先用强信号。** 能用确定性断言判断的，不交给按档位打分的评分表；能用评分表判断的，不交给模型自由评判。
+
+| 级别 | 形式 | 何时用 |
+|---|---|---|
+| S1 确定性 | 字符串、正则、可执行断言 | 只要“对”能由程序判断，首选 |
+| S2 锚定评分表 | 每一档（0 / 1 / 2）对应一个看得见的信号，各维度带权重 | 对错有主观成分，但能拆成可观察的维度 |
+| S3 模型评审（判官） | 独立的模型按评分表打分 | 前两种都不可行时才用，并且必须先通过 Phase 1 校准 |
+
+## 基准由什么组成
+
+每个要进化的 skill 自带一个 `evals/` 目录，共六部分。完整写法见 [BENCHMARK_STANDARD.md](BENCHMARK_STANDARD.md)。
+
+| 文件 | 定义“好坏”的哪一面 | 最低要求 |
+|---|---|---|
+| `scenarios.md` | 行为对错：每个场景列出必须做到的和不许做的 | 至少 6 条，其中正例 ≥ 4、对抗 ≥ 1、过度触发 ≥ 1 |
+| `rubric.md` | “好”的各个维度，每一档绑定看得见的信号 | 至少 3 个维度，权重之和为 1.0 |
+| `invariants.md` | 红线，违反即出局 | 至少 3 条，用 MUST / MUST NOT 等 RFC 2119 关键词 |
+| `directional_probes.md` | 模型是否真的照 skill 的指令做了，用正则断言 | 至少 2 条 |
+| `posture_probes.md` | 语气和职责范围有没有悄悄跑偏 | 至少 1 条，建议包含一条多轮对话 |
+| `controls/` | 检验打分本身的三个对照样本 | 原样副本、故意写烂、故意跑偏各一份 |
+
+三类场景缺一不可：好的 skill 不只是该出手时出手，还要在用户施压时守得住，在不该它管的时候不乱触发。
+
+## 判官校准
+
+用模型打分之前，先让它评三个答案已知的对照样本：
+
+| 对照 | 内容 | 必须得到的结果 | 不达标说明 |
+|---|---|---|---|
+| `ctrl-A-identity` | 基线 `SKILL.md` 的原样副本 | 得分与基线一致（±0.05） | 打分噪声太大 |
+| `ctrl-C-obvious-regress` | 故意写烂的版本 | 排在所有候选之后 | 打分分不出好坏 |
+| `ctrl-B-posture-bad` | 故意把语气写强硬、越出职责范围的版本 | 至少一条姿态探针的漂移程度 ≥ 2 | 漂移检测不起作用 |
+
+任何一项不达标，就回到 Phase 0 修评分表、红线或判官，而不是继续往下跑。判官只看行为输出，不看候选 skill 的文本。
+
+## 门控规则
+
+候选同时满足三条才会被接受：
+
+1. **红线全过。** 违反任何一条 MUST / MUST NOT，分数再高也出局。
+2. **验证切片上的得分严格大于当前版本。** 平分也拒绝，避免一连串“没有变差”的改动累积成漂移。
+3. **零回退。** 验证切片里原本通过的场景不能变成不通过。
+
+场景按用途分成三份，互不混用：读失败、提改动用训练切片，门控验收用验证切片，最终汇报的数字用测试切片，测试切片只读一次。每个切片不足 10 条左右时用部分得分，而不是通过率，否则门控感知不到小的进步。
+
+被拒绝的改动和掉分原因会记下来，供下一轮避开。通过门控的候选只是进入提案，是否采纳由人决定。
+
+## 谁做什么
+
+| 谁 | 做什么 |
+|---|---|
+| **你** | 定义对错：确认场景、评分表的权重、红线；决定是否采纳提案 |
+| **编码 Agent** | 协助起草基准，评基线，提出改动，执行门控，整理提案 |
+| **校验器** | 检查基准的结构和数量 |
+
+基准不能由 Agent 起草后直接采用，场景是否有代表性、评分档位是否准确、红线划在哪里，都需要人确认。
+
+## 校验器查什么、不查什么
+
+**查：**
+
+- 五个文件和 `controls/` 下的三个对照是否都在。
+- 场景总数和三类场景的数量（按 `## scenario-<N>-<pos|adv|over>:` 标题统计）。
+- 评分表的维度数和权重之和（1.0 ± 0.01）。
+- 以 MUST、MUST NOT、SHOULD、SHOULD NOT、MAY 开头的红线条数。
+- `## directional-probe-<N>:` 标题的条数。
+
+**不查：**
+
+- 内容质量：场景是否真实、评分档位是否准确、对照样本是否真的写了内容。
+- 姿态探针的条数，目前只检查文件是否存在。
+- 场景里是否写了期望行为和禁止行为，以及探针里的正则是否合法。
+
+## 已知的不足
+
+- **没有执行脚本。** 打分、门控、切片管理都靠 Agent 按文档执行，没有程序保证每次都以同样的方式完成，也没有自动留下的账本。
+- **切片怎么划分没有规定格式。** 规范要求训练、验证、测试三份互不混用，但 `scenarios.md` 的格式里没有标注切片的位置，需要你和 Agent 在建基准时约定。只有最低要求的 6 条场景时，三份都会很薄，结论只能当参考。
+- **模型评审只和判官一样可信。** 校准能暴露判官失灵，不能消除它的偏差。完全主观、拆不成 S1 或 S2 的 skill，在这套方法里收益有限。
+- **建基准是前置的人力成本。** 建议先给使用频繁、对错又能客观判断的 skill 建。
+- **改进的上限取决于提出改动的模型。** 门控只负责拦住坏改动，好改动要靠它提出来。建议用较强的模型提改动，被评测的目标模型保持固定。
+- **“模型升级后重跑基准”还没有实际验证过。** 思路是：升级后基准分不降，去掉 skill 也没有回退，说明这部分能力模型已经自带，skill 可以删；基准分下降，说明 skill 更该保留。这在逻辑上成立，但目前只是设想。
+- **没有和其他方法做过对比实验。** 白皮书里的数字来自模拟推演和一个确定性的小演示，相关代码不在本仓库中，不能据此认为这套方法优于别的做法。
